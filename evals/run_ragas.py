@@ -143,6 +143,12 @@ def main() -> int:
             if snip:
                 ctx_snippets.append(snip)
 
+        print(f"[EVAL] question: {q}")
+        print(f"[EVAL] gt: {gt}")
+        print(f"[EVAL] answer: {ans}")
+        print(f"[EVAL] contexts: {ctx_snippets}")
+        print("\n")
+
         questions.append(q)
         answers.append(ans)
         contexts.append(ctx_snippets)
