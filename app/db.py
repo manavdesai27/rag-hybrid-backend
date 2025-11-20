@@ -30,10 +30,28 @@ def init_db() -> None:
 
     This function is idempotent and safe to run multiple times.
     """
+    vector_available = False
     with engine.connect() as conn:
-        # Enable pgvector extension
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        conn.commit()
+        try:
+            # Check if pgvector is available; attempt to enable if missing
+            res = conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'"))
+            if res.scalar() == 1:
+                vector_available = True
+            else:
+                try:
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    vector_available = True
+                except Exception as e:
+                    # Tables using the 'vector' type will fail without the extension
+                    raise RuntimeError(
+                        "pgvector extension is not available on the configured database. "
+                        "Enable it (CREATE EXTENSION vector) or point DATABASE_URL to a Postgres "
+                        "instance with pgvector installed."
+                    ) from e
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     # Import models after Base is defined
     from app import models  # noqa: F401
@@ -43,26 +61,31 @@ def init_db() -> None:
 
     # Create vector index (ivfflat) for embeddings if not exists
     # Note: Requires pgvector >= 0.4.0; table/index names must match models.
-    with engine.connect() as conn:
-        # Switch to IVF index (requires ANALYZE after populate for optimal perf)
-        conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_indexes WHERE indexname = 'idx_chunks_embedding_ivfflat'
-                    ) THEN
-                        CREATE INDEX idx_chunks_embedding_ivfflat
-                        ON chunks USING ivfflat (embedding vector_cosine_ops)
-                        WITH (lists = 100);
-                    END IF;
-                END$$;
-                """
-            )
-        )
-        # Lightweight BM25-style support could be added via tsvector GIN index; we keep BM25 in-memory for MVP.
-        conn.commit()
+    if vector_available:
+        with engine.connect() as conn:
+            try:
+                # Switch to IVF index (requires ANALYZE after populate for optimal perf)
+                conn.execute(
+                    text(
+                        """
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_indexes WHERE indexname = 'idx_chunks_embedding_ivfflat'
+                            ) THEN
+                                CREATE INDEX idx_chunks_embedding_ivfflat
+                                ON chunks USING ivfflat (embedding vector_cosine_ops)
+                                WITH (lists = 100);
+                            END IF;
+                        END$$;
+                        """
+                    )
+                )
+                # Lightweight BM25-style support could be added via tsvector GIN index; we keep BM25 in-memory for MVP.
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                # Non-fatal: index creation can be done later once data exists
 
 
 @contextmanager
